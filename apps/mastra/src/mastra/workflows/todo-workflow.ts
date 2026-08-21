@@ -72,7 +72,21 @@ const generateComment = createStep({
       await writer.write({ type: COMMENT_DELTA, text: delta });
     }
 
-    return { todoId: inputData.todoId, comment: comment.trim() };
+    // A failed model call does not throw out of `textStream` — the stream just
+    // ends and the failure lands on `result.error`. Without these two checks a
+    // dead gateway yields a "successful" run that saved an empty comment:
+    // Studio shows green, the UI shows nothing, and the one failure this
+    // blueprint most needs to surface is the one it hides.
+    if (result.error) throw result.error;
+
+    comment = comment.trim();
+    if (!comment) {
+      throw new Error(
+        "commenter agent returned no text — check AI_GATEWAY_BASE_URL / AI_GATEWAY_API_KEY / AI_MODEL",
+      );
+    }
+
+    return { todoId: inputData.todoId, comment };
   },
 });
 
