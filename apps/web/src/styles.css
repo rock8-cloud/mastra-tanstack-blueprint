@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+
+/* Light theme only — one palette keeps the blueprint easy to read. */
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+
+  --color-accent: oklch(0.51 0.19 268);
+  --color-accent-strong: oklch(0.44 0.19 268);
+  --color-accent-subtle: oklch(0.96 0.02 268);
+}
+
+html {
+  color-scheme: light;
+}

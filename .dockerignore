@@ -1,0 +1,19 @@
+# Keep the build context small and reproducible: dependencies and build output
+# are produced inside the image, never copied from the host.
+node_modules
+**/node_modules
+
+.mastra
+.output
+.nitro
+.tanstack
+dist
+.turbo
+
+.git
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
