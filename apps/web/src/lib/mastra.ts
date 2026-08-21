@@ -20,13 +20,9 @@ export async function proxyToMastra(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  // Read the env var per request rather than at module scope so the value is
-  // picked up from the runtime environment wherever this is deployed.
-  const baseUrl = process.env.MASTRA_API_URL ?? DEFAULT_MASTRA_API_URL
-
   let upstream: Response
   try {
-    upstream = await fetch(`${baseUrl}${path}`, init)
+    upstream = await fetch(`${mastraUrl()}${path}`, init)
   } catch {
     return Response.json({ error: 'Mastra server unreachable' }, { status: 502 })
   }
@@ -35,4 +31,52 @@ export async function proxyToMastra(
     status: upstream.status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+/**
+ * The same proxy for Server-Sent Events, with one difference that is the whole
+ * point: the upstream body is handed back untouched instead of being buffered
+ * with `text()`. Buffering would collect every token and deliver them in one
+ * burst when the run ends, which looks identical to streaming being broken.
+ *
+ * The headers matter as much as the body. `no-transform` and `X-Accel-Buffering`
+ * tell intermediaries (nitro's node server, nginx, a CDN, Rock8Cloud's ingress)
+ * not to compress or buffer the response — a gzip layer with a 4KB window would
+ * hold the first tokens hostage exactly the same way.
+ */
+export async function streamFromMastra(path: string): Promise<Response> {
+  let upstream: Response
+  try {
+    upstream = await fetch(`${mastraUrl()}${path}`, {
+      headers: { Accept: 'text/event-stream' },
+    })
+  } catch {
+    return Response.json({ error: 'Mastra server unreachable' }, { status: 502 })
+  }
+
+  // Errors upstream (404 for an unknown run) come back as JSON, not a stream.
+  if (!upstream.ok || !upstream.body) {
+    return new Response(await upstream.text(), {
+      status: upstream.status,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  })
+}
+
+/**
+ * Read per request rather than at module scope so the value is picked up from
+ * the runtime environment wherever this is deployed.
+ */
+function mastraUrl(): string {
+  return process.env.MASTRA_API_URL ?? DEFAULT_MASTRA_API_URL
 }

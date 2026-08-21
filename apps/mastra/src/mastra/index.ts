@@ -21,11 +21,12 @@ const connectionString = requireEnv("DATABASE_URL");
 // postgres.js (src/db) encrypts without verifying the certificate — libpq
 // semantics — while node-postgres (inside @mastra/pg) escalates it to
 // verify-full and rejects the self-signed certificates managed Postgres
-// offerings (Rock8Cloud's included) present. Align them: for require/prefer,
-// encrypt but don't verify. verify-ca / verify-full URLs keep full checks.
-const relaxedSsl = /sslmode=(require|prefer)\b/.test(connectionString)
-  ? { ssl: { rejectUnauthorized: false } }
-  : {};
+// offerings (Rock8Cloud's included) present. Setting DATABASE_SSL_NO_VERIFY
+// tells the store to encrypt without verifying, matching postgres.js.
+const relaxedSsl =
+  process.env.DATABASE_SSL_NO_VERIFY === "true"
+    ? { ssl: { rejectUnauthorized: false } }
+    : {};
 
 export const mastra = new Mastra({
   agents: { commenter: commenterAgent },

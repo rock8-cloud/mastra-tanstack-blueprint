@@ -1,7 +1,7 @@
 # @repo/web
 
-TanStack Start frontend for the todo demo: you add a todo, a Mastra workflow saves it
-and an AI agent comments on it a moment later.
+TanStack Start frontend for the todo demo: you add a todo, a Mastra workflow saves it,
+and an AI agent's comment streams into the card token by token.
 
 ## The one architectural rule
 
@@ -16,18 +16,43 @@ solely from server route handlers. That keeps the upstream address (and any futu
 credentials) off the client and gives one place to normalise upstream failures — a
 connection error to Mastra becomes `502 {"error":"Mastra server unreachable"}`.
 
-The agent's comment is written asynchronously, so `POST /api/todos` returns `202
-{"runId":...}` before the comment exists. `/todos` polls `GET /api/todos` every 2s
-(TanStack Query `refetchInterval`) and shows a pulsing "agent is thinking…" placeholder
-on todos with no comments yet. Making that gap visible is the point of the demo.
+## What happens when you add a todo
+
+Everything is on one page (`/`): the form on top, the list under it.
+
+1. `POST /api/todos` → `202 {"runId":...}`. The workflow is already running; the
+   comment does not exist yet.
+2. The page prepends an optimistic card and opens
+   `GET /api/todos/stream?runId=...` — a Server-Sent Events connection that
+   *observes* that run.
+3. `todo` fills in the card's real id and timestamp, then each `delta` appends a
+   chunk of the comment as the model writes it, with a caret blinking at the end.
+4. `done` triggers a refetch of `GET /api/todos`; once the saved comment is on
+   screen the optimistic card is dropped. No flash, no duplicate.
+
+**Polling never stops.** The list keeps a 2s `refetchInterval` (TanStack Query)
+and shows a pulsing "agent is thinking…" on todos with no comment yet. It covers
+todos created in another tab, a stream that could not connect, and runs that
+finished before the browser attached — in every one of those cases the comment
+simply pops in a moment later. The stream is a faster path onto the same data,
+never the source of truth, and if it fails `src/lib/todo-stream.ts` gives up
+silently rather than reconnecting.
 
 ## Routes
 
-| Path         | File                       | What it is                                        |
-| ------------ | -------------------------- | ------------------------------------------------- |
-| `/`          | `src/routes/index.tsx`     | New-todo form; POSTs to `/api/todos`, then navigates to `/todos` |
-| `/todos`     | `src/routes/todos.tsx`     | Polling list of todos with agent comments          |
-| `/api/todos` | `src/routes/api/todos.ts`  | Server route: `GET` + `POST`, validates and proxies to Mastra |
+| Path                | File                             | What it is                                        |
+| ------------------- | -------------------------------- | ------------------------------------------------- |
+| `/`                 | `src/routes/index.tsx`           | The whole app: form + live-updating todo list      |
+| `/todos`            | `src/routes/todos.tsx`           | Redirects to `/` — kept so old links still work    |
+| `/api/todos`        | `src/routes/api/todos.ts`        | Server route: `GET` + `POST`, validates and proxies to Mastra |
+| `/api/todos/stream` | `src/routes/api/todos.stream.ts` | Server route: proxies the SSE stream for one `runId` |
+
+The SSE proxy (`streamFromMastra` in `src/lib/mastra.ts`) hands the upstream body
+back **unbuffered** — reading it with `.text()` like the JSON proxy does would
+collect every token and deliver them in one burst at the end, which is
+indistinguishable from streaming being broken. It also sets
+`Cache-Control: no-transform` and `X-Accel-Buffering: no` so nothing in front of
+it (nginx, a CDN, Rock8Cloud's ingress) re-buffers or gzips the response.
 
 ## Scripts
 

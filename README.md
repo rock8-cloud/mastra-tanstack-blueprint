@@ -2,14 +2,15 @@
 
 A small, complete blueprint for **agentic workflows in production**: a
 [Mastra](https://mastra.ai) backend where every new todo is commented on by an AI
-agent, a [TanStack Start](https://tanstack.com/start) frontend that shows the
-comment arriving, and one PostgreSQL database holding both the app's data and
-Mastra's own run state.
+agent, a [TanStack Start](https://tanstack.com/start) frontend where that comment
+streams in token by token, and one PostgreSQL database holding both the app's
+data and Mastra's own run state.
 
 The todo domain is deliberately trivial. What the repository actually teaches is
 the shape of the thing around it: an asynchronous workflow with typed steps, a UI
-that stays responsive while a model is thinking, a model chosen entirely by
-configuration, and a deployment story that a coding agent can execute.
+that stays responsive while a model is thinking *and* shows it thinking, a model
+chosen entirely by configuration, and a deployment story that a coding agent can
+execute.
 
 | Layer     | Tech                                                                                                                        |
 | --------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -23,32 +24,35 @@ configuration, and a deployment story that a coding agent can execute.
 ## Architecture
 
 ```
-   Browser
-     │                                                  │
-     │  write path                                      │  read path
-     │  POST /api/todos {"title"}                       │  GET /api/todos
-     │  (/ page, on submit)                             │  (/todos page, every 2s)
-     ▼                                                  ▼
+   Browser  (one page: "/")
+     │                          │                              │
+     │  write path              │  live path                   │  read path
+     │  POST /api/todos         │  GET /api/todos/stream       │  GET /api/todos
+     │  {"title"}               │  ?runId=…   (SSE)            │  every 2s
+     ▼                          ▼                              ▼
   ┌───────────────────────────────────────────────────────────────────────────┐
-  │ apps/web — TanStack Start server route   src/routes/api/todos.ts          │
-  │            validates, then src/lib/mastra.ts fetches MASTRA_API_URL       │
+  │ apps/web — TanStack Start server routes  src/routes/api/todos{,.stream}.ts│
+  │            validate, then src/lib/mastra.ts fetches MASTRA_API_URL        │
+  │            (the SSE hop passes the body through — never buffers it)       │
   └───────────────────────────────────────────────────────────────────────────┘
-     │                                                  │
-     ▼                                                  ▼
+     │                          │                              │
+     ▼                          ▼                              ▼
   ┌───────────────────────────────────────────────────────────────────────────┐
   │ apps/mastra — Mastra server, custom routes   src/mastra/routes.ts         │
-  │   POST /todos  →  start a run, answer 202 {"runId"} immediately           │
-  │   GET  /todos  →  listTodosWithComments()                                 │
+  │   POST /todos              →  run.stream(), answer 202 {"runId"} at once  │
+  │   GET  /todos/stream/:id   →  createRun({runId}).observeStream()          │
+  │   GET  /todos              →  listTodosWithComments()                     │
   └───────────────────────────────────────────────────────────────────────────┘
-     │
+     │                          ▲
+     │                          │  todo / delta / done / error   (src/mastra/todo-stream.ts)
      ▼  todo-workflow  (src/mastra/workflows/todo-workflow.ts)
   ┌───────────────┐   ┌──────────────────┐   ┌──────────────┐
   │  save-todo    │──▶│ generate-comment │──▶│ save-comment │
   └───────────────┘   └──────────────────┘   └──────────────┘
      │                    │        ▲                  │
      │                    ▼        │                  │
-     │            commenter agent  │ text             │
-     │         (src/mastra/agents) │                  │
+     │            commenter agent  │ agent.stream()   │
+     │         (src/mastra/agents) │ text deltas ──▶ writer.write()
      │                    │        │                  │
      │                    ▼        │                  │
      │         OpenAI-compatible gateway              │
@@ -62,10 +66,12 @@ configuration, and a deployment story that a coding agent can execute.
                         Mastra Studio at http://localhost:4111/
 ```
 
-Two things to notice in that picture. The browser has exactly one upstream — its
-own server routes; it never reaches Mastra, the database or the gateway. And the
+Three things to notice in that picture. The browser has exactly one upstream —
+its own server routes; it never reaches Mastra, the database or the gateway. The
 arrow out of `POST /api/todos` returns before the model has said anything: the
-run keeps going, the UI polls, the comment shows up.
+run keeps going whether or not anyone is watching. And the live path is a
+*separate* connection that only **observes** that run — it does not start it, and
+closing it does not stop it.
 
 ## Layout
 
@@ -81,6 +87,7 @@ apps/
       mastra/
         index.ts             the Mastra instance: storage, port, routes
         routes.ts            the HTTP contract apps/web consumes (/todos)
+        todo-stream.ts       run events → Server-Sent Events (todo/delta/done/error)
         agents/commenter.ts  the agent; its model comes from env vars only
         workflows/
           todo-workflow.ts   save-todo → generate-comment → save-comment
@@ -89,10 +96,12 @@ apps/
   web/                       the TanStack Start frontend
     src/
       routes/
-        index.tsx            "/"       new-todo form
-        todos.tsx            "/todos"  polling list with agent comments
+        index.tsx            "/"       the whole app: form + live todo list
+        todos.tsx            "/todos"  redirect to "/" (old links keep working)
         api/todos.ts         server route: validate + proxy to Mastra
+        api/todos.stream.ts  server route: proxy one run's SSE stream
       lib/mastra.ts          the only place that knows MASTRA_API_URL
+      lib/todo-stream.ts     browser-side SSE reader
     Dockerfile
 packages/
   typescript-config/         shared tsconfig base
@@ -154,9 +163,10 @@ applying them without starting the server.)
 | Mastra's own REST API          | http://localhost:4111/api/*      |
 | PostgreSQL                     | localhost:5437                   |
 
-Open http://localhost:3000, add a todo, and watch `/todos`: the card appears
-immediately with a pulsing *"agent is thinking…"*, and the comment replaces it a
-second or two later. Then open Studio and look at the same run, step by step.
+Open http://localhost:3000 and add a todo. The card appears immediately, then the
+agent's comment writes itself into it word by word. Then open Studio and look at
+the same run, step by step — the deltas you just watched are the
+`workflow-step-output` events on `generate-comment`.
 
 ### Why the custom routes are not under `/api`
 
@@ -217,20 +227,22 @@ distinguishable from "upstream said no".
 
 ```ts
 const run = await workflow.createRun()
-const { runId } = await run.startAsync({ inputData: { title } })
-return c.json({ runId }, 202)
+run.stream({ inputData: { title } })   // starts it; deliberately not awaited
+return c.json({ runId: run.runId }, 202)
 ```
 
 `202` with a `runId`, not `201` with a comment. The model call takes seconds and
-no HTTP connection should be held open for it.
+no HTTP connection should be held open for it. `run.stream()` returns as soon as
+the run is dispatched, exactly like `run.startAsync()` — the difference is that
+it also records the run's events, which is what step 6 attaches to.
 
 > **Principle — async fire-and-forget plus a polling UI.** The run is durable in
 > Postgres, so a crash mid-generation is recoverable and visible in Studio rather
-> than lost with the socket. On the other side, `apps/web/src/routes/todos.tsx`
+> than lost with the socket. On the other side, `apps/web/src/routes/index.tsx`
 > uses TanStack Query with `refetchInterval: 2000` and renders *"agent is
-> thinking…"* for any todo with no comments yet. No websockets, no SSE, nothing
-> to explain — and the latency of the agent becomes a visible part of the UI
-> instead of a hidden stall.
+> thinking…"* for any todo with no comments yet. That polling loop is the floor
+> the whole feature stands on: it is correct with no streaming at all, so
+> everything added on top is allowed to fail.
 
 **4. The workflow runs three narrow steps.**
 `apps/mastra/src/mastra/workflows/todo-workflow.ts`:
@@ -252,19 +264,58 @@ output schema *is* the next one's input schema.
 > resumable and debuggable. `save-todo` commits first, so if the model call fails
 > the todo still exists and the run tells you precisely which step to retry.
 
-**5. The agent asks a model that is pure configuration.**
+**5. The agent asks a model that is pure configuration, and streams its answer.**
 `generate-comment` pulls the agent out of the registry — `mastra.getAgent('commenter')`
 — rather than importing it, so the call is traced as part of the run and the agent
 stays swappable. `apps/mastra/src/mastra/agents/commenter.ts` builds its model with
 `createOpenAICompatible({ baseURL: AI_GATEWAY_BASE_URL, apiKey: AI_GATEWAY_API_KEY }).chatModel(AI_MODEL)`.
 
-> **Principle — env-driven model config.** No provider, endpoint, key or model id
-> appears anywhere in `src/`. Switching from a hosted gateway to a self-hosted
-> vLLM, or from one model to another, is an environment change and a restart. The
-> model factory is also lazy (`model: () => (model ??= createGatewayModel())`),
-> which is why the image can be built without credentials.
+The step streams rather than waits, and forwards each chunk into the run itself:
 
-**6. Both writes go through one file.**
+```ts
+const result = await agent.stream(`Todo: ${title}\n\nWrite your comment.`)
+
+let comment = ''
+for await (const delta of result.textStream) {
+  comment += delta
+  await writer.write({ type: 'comment-delta', text: delta })   // must be awaited
+}
+```
+
+> **Principle — stream through the run, not around it.** `writer` is the step's
+> handle on its own run's event stream. Anything written there shows up as a
+> `workflow-step-output` event for *every* observer — the SSE route below, Studio,
+> the Mastra client SDK — so making output live needed no event bus, no socket
+> server and no shared state. The step still returns the complete comment, so the
+> rest of the workflow is unchanged.
+
+**6. A second connection observes the run.**
+`GET /todos/stream/:runId` (`apps/mastra/src/mastra/routes.ts`) re-attaches to the
+run that `POST /todos` started and translates its events into Server-Sent Events
+in `apps/mastra/src/mastra/todo-stream.ts`:
+
+```ts
+const run = await workflow.createRun({ runId })   // the same run, still executing
+return toSseResponse(run.observeStream())         // todo / delta / done / error
+```
+
+The browser opens that stream through `GET /api/todos/stream?runId=…`, appends
+each `delta` to an optimistic card, and on `done` refetches the list and drops
+the card.
+
+> **Principle — observe, don't drive.** The run belongs to the `POST`, not to the
+> stream. Kill the client in the middle of the deltas and the comment still lands
+> in Postgres; attach after the run finished and you get an immediate `done` and
+> fall back to polling. That is the difference between a live view and a fragile
+> one — the fast path can be lost at any moment without losing any work.
+>
+> ```sh
+> RUN=$(curl -s -XPOST localhost:3000/api/todos -H 'content-type: application/json' \
+>   -d '{"title":"prove it"}' | sed 's/.*"runId":"\([^"]*\)".*/\1/')
+> curl -N "localhost:3000/api/todos/stream?runId=$RUN"   # ^C mid-stream; the comment still saves
+> ```
+
+**7. Both writes go through one file.**
 Steps call `insertTodo` / `insertComment` from `apps/mastra/src/db/queries.ts`.
 `client.ts` — the only Drizzle client in the app — is imported by `queries.ts` and
 nothing else.
@@ -274,7 +325,7 @@ nothing else.
 > which makes it testable, and swapping persistence or adding an index touches
 > exactly one file.
 
-**7. Everything lands in the same database.**
+**8. Everything lands in the same database.**
 `todos` and `comments` sit next to Mastra's `mastra_workflow_snapshot`,
 `mastra_ai_spans` and friends, because `PostgresStore` is configured with the same
 `DATABASE_URL`.
@@ -289,7 +340,7 @@ nothing else.
 >
 > The `runId` the browser received in step 3 is the `run_id` in that table.
 
-**8. The read path is boring on purpose.**
+**9. The read path is boring on purpose.**
 `GET /api/todos` in the web app proxies to `GET /api/todos` on Mastra, which calls
 `listTodosWithComments()` — one Drizzle relational query, newest todo first,
 comments in reading order. The response shape is fixed:
@@ -368,10 +419,12 @@ you prefer:
    and the Mastra service's URL to see the run in Studio.
 
 Managed Postgres connection URLs typically carry `sslmode=require` with a
-self-signed certificate. The mastra service handles this (see the `relaxedSsl`
-note in `apps/mastra/src/mastra/index.ts`): `require`/`prefer` encrypt without
-certificate verification — libpq semantics, matching the postgres.js driver —
-while `verify-ca`/`verify-full` URLs keep full verification.
+self-signed certificate, which the node-postgres driver inside `@mastra/pg`
+rejects. Set `DATABASE_SSL_NO_VERIFY=true` on the mastra service to have
+Mastra's storage encrypt without certificate verification — libpq semantics,
+matching what the postgres.js driver already does (see the note in
+`apps/mastra/src/mastra/index.ts`). Leave it unset for databases with real
+certificates.
 
 `PORT` is injected by the platform — do not set it manually. Both apps bind
 whatever they are given: Mastra through `server.port` in
@@ -393,7 +446,10 @@ handling.
 - **Add a second agent.** Drop a file next to `agents/commenter.ts`, register it in
   the `agents` map in `src/mastra/index.ts`, and reach it from a step with
   `mastra.getAgent('yourAgent')`. It shows up in Studio immediately.
-- **Add an endpoint.** Add a `registerApiRoute('/api/…')` entry in
-  `src/mastra/routes.ts`, and a matching server route in
-  `apps/web/src/routes/api/` that proxies to it. Keep custom routes under `/api`
-  and leave `/mastra` to Mastra.
+- **Stream something else.** Any step can `await writer.write({ type: '…', … })`;
+  the chunk reaches every observer of the run. Add a case for it in
+  `src/mastra/todo-stream.ts` and a handler in `apps/web/src/lib/todo-stream.ts`.
+- **Add an endpoint.** Add a `registerApiRoute('/…')` entry in
+  `src/mastra/routes.ts` — at the **root**, never under `/api`, which Mastra
+  reserves for its own REST API — and a matching server route in
+  `apps/web/src/routes/api/` that proxies to it.

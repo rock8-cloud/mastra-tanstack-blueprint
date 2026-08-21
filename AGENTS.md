@@ -40,6 +40,13 @@ of things that will break if you ignore them.
   maps in `apps/mastra/src/mastra/index.ts`, and reached from steps via
   `mastra.getAgent(...)` / `mastra.getWorkflow(...)` rather than direct imports,
   so runs stay traceable in Studio.
+- **Live output goes through the run's own event stream, not a side channel.**
+  A step that wants to stream calls `agent.stream(...)` and forwards each chunk
+  with the `writer` its `execute` receives: `await writer.write({ type, … })`.
+  The write must be awaited — an un-awaited one locks the stream and the next
+  throws `WritableStream is locked`. Every observer of the run then sees the
+  chunk as a `workflow-step-output` event, including Studio and the Mastra
+  client SDK. Never add an EventEmitter, socket or global map to move this data.
 
 ## The web ↔ Mastra contract (frozen)
 
@@ -53,10 +60,34 @@ Mastra server — same method, body and response either way:
 | ------ | ------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------- |
 | `POST` | `/api/todos` → `/todos`  | `{"title": string}` (1–500 chars, trimmed) | `202 {"runId": string}`; `400 {"error": string}` on invalid input                |
 | `GET`  | `/api/todos` → `/todos`  | —                      | `200 {"todos":[{id, title, createdAt, comments:[{id, content, author, createdAt}]}]}`, newest first |
+| `GET`  | `/api/todos/stream?runId=` → `/todos/stream/:runId` | — | `200 text/event-stream` (see events below); `400`/`404 {"error": string}` |
 
 `POST` is asynchronous by design: it returns before the agent comment exists.
 Do not make it wait for the model. A connection failure between web and Mastra is
 normalised to `502 {"error":"Mastra server unreachable"}`.
+
+The stream carries exactly four event names. They are part of the frozen
+contract; `apps/mastra/src/mastra/todo-stream.ts` writes them and
+`apps/web/src/lib/todo-stream.ts` reads them.
+
+| Event   | Data                              | When                                             |
+| ------- | --------------------------------- | ------------------------------------------------ |
+| `todo`  | `{todoId, title, createdAt}`      | `save-todo` committed                            |
+| `delta` | `{text}`                          | one chunk of the agent's comment                 |
+| `done`  | `{todoId?, commentId?}`           | always last; the browser refetches `GET /todos`  |
+| `error` | `{message}`                       | the run failed; the browser falls back to polling |
+
+**The stream is an observer, never the driver.** `POST /todos` starts the run
+with `run.stream()` and returns immediately; `GET /todos/stream/:runId`
+re-attaches with `workflow.createRun({ runId })` + `run.observeStream()`.
+Disconnecting the client does not cancel the run and the comment is still saved.
+Do not move run creation into the stream route, and do not remove the polling
+`refetchInterval` in `apps/web/src/routes/index.tsx` — it is the fallback for
+runs that finished before a client attached, and for todos created elsewhere.
+
+Both proxy hops must stay unbuffered: `streamFromMastra` in
+`apps/web/src/lib/mastra.ts` returns `upstream.body` directly (never `.text()`)
+and both hops set `Cache-Control: no-transform` and `X-Accel-Buffering: no`.
 
 ## Commands
 
@@ -96,6 +127,7 @@ add any new variable to `.env.example` **and** to `globalEnv` in `turbo.json`.
 | `AI_GATEWAY_BASE_URL` | `apps/mastra` | OpenAI-compatible API root                                     |
 | `AI_GATEWAY_API_KEY`  | `apps/mastra` | Key for that gateway                                           |
 | `AI_MODEL`            | `apps/mastra` | Model id as the gateway knows it                               |
+| `DATABASE_SSL_NO_VERIFY` | `apps/mastra` | `true` = Mastra storage encrypts without cert verification (self-signed managed Postgres) |
 | `PORT`                | both apps     | Port to bind; Mastra defaults to `4111`, web to `3000`. Injected by Rock8Cloud in production |
 | `MASTRA_API_URL`      | `apps/web`    | Base URL of the Mastra server, read server-side per request    |
 

@@ -15,18 +15,36 @@ import { insertComment, insertTodo } from "../../db/queries.js";
  * The steps are deliberately narrow (one side effect each). That granularity is
  * what makes a run resumable and debuggable: if the model call fails, the todo
  * is already committed and the run shows precisely which step to retry.
+ *
+ * A run also emits events while it executes. `generate-comment` pushes the
+ * agent's text deltas onto that stream with its `writer`, which is what lets the
+ * browser watch the comment being written (src/mastra/todo-stream.ts). Nothing
+ * about the steps' contract changes: the step still returns the whole comment.
  */
 
 const saveTodo = createStep({
   id: "save-todo",
   description: "Persists the todo so it exists before any AI work is attempted.",
   inputSchema: z.object({ title: z.string() }),
-  outputSchema: z.object({ todoId: z.string(), title: z.string() }),
+  outputSchema: z.object({
+    todoId: z.string(),
+    title: z.string(),
+    createdAt: z.string(),
+  }),
   execute: async ({ inputData }) => {
     const todo = await insertTodo(inputData.title);
-    return { todoId: todo.id, title: todo.title };
+    // createdAt travels with the step output so the stream can render a real
+    // card (same shape as GET /todos) before the comment exists.
+    return {
+      todoId: todo.id,
+      title: todo.title,
+      createdAt: todo.createdAt.toISOString(),
+    };
   },
 });
+
+/** Custom event this step writes into the run's stream, one per model token. */
+export const COMMENT_DELTA = "comment-delta";
 
 const generateComment = createStep({
   id: "generate-comment",
@@ -35,13 +53,26 @@ const generateComment = createStep({
   outputSchema: z.object({ todoId: z.string(), comment: z.string() }),
   // The agent is pulled from the Mastra registry rather than imported directly,
   // so this call is traced as part of the run and the agent stays swappable.
-  execute: async ({ inputData, mastra }) => {
+  execute: async ({ inputData, mastra, writer }) => {
     const agent = mastra.getAgent("commenter");
-    const result = await agent.generate(
+    const result = await agent.stream(
       `Todo: ${inputData.title}\n\nWrite your comment.`,
     );
 
-    return { todoId: inputData.todoId, comment: result.text.trim() };
+    // `writer` is the step's handle on the run's event stream. Every chunk
+    // written here shows up as a `workflow-step-output` event on anything
+    // observing the run (our SSE route, Studio, the Mastra client SDK), which
+    // is how the browser sees the comment appear token by token.
+    //
+    // The write must be awaited: an un-awaited write locks the stream and the
+    // next one throws "WritableStream is locked".
+    let comment = "";
+    for await (const delta of result.textStream) {
+      comment += delta;
+      await writer.write({ type: COMMENT_DELTA, text: delta });
+    }
+
+    return { todoId: inputData.todoId, comment: comment.trim() };
   },
 });
 

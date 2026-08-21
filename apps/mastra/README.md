@@ -15,6 +15,7 @@ src/
   mastra/
     index.ts                   the Mastra instance: storage, agent, workflow, routes
     routes.ts                  the HTTP contract apps/web consumes
+    todo-stream.ts             workflow run events -> Server-Sent Events
     agents/commenter.ts        the agent, model configured purely from env
     workflows/todo-workflow.ts save-todo -> generate-comment -> save-comment
 drizzle/                       generated migrations (committed)
@@ -38,13 +39,32 @@ purpose. Single-instance assumption — with replicas, migrate in a release step
 
 ## HTTP API
 
-| Method | Path       | Response                                                                                               |
-| ------ | ---------- | ------------------------------------------------------------------------------------------------------ |
-| POST   | `/todos`   | `202 {"runId": string}` — body `{"title": string}` (1–500 chars); `400 {"error": string}` when invalid |
-| GET    | `/todos`   | `200 {"todos": [{id, title, createdAt, comments: [{id, content, author, createdAt}]}]}`, newest first  |
+| Method | Path                     | Response                                                                                               |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| POST   | `/todos`                 | `202 {"runId": string}` — body `{"title": string}` (1–500 chars); `400 {"error": string}` when invalid |
+| GET    | `/todos`                 | `200 {"todos": [{id, title, createdAt, comments: [{id, content, author, createdAt}]}]}`, newest first  |
+| GET    | `/todos/stream/:runId`   | `200 text/event-stream` of `todo` / `delta` / `done` / `error` events; `404 {"error": string}` for an unknown run |
 
 `POST` starts the workflow and returns immediately — the agent comment appears on
 a later `GET`, usually within a couple of seconds.
+
+`GET /todos/stream/:runId` is how it appears *sooner*. It re-attaches to the run
+with `workflow.createRun({ runId })` — which returns the run object that is still
+executing — and forwards `run.observeStream()` as Server-Sent Events:
+
+```
+event: todo    data: {"todoId":"…","title":"…","createdAt":"…"}   save-todo committed
+event: delta   data: {"text":"one chunk "}                        repeated, as the model writes
+event: done    data: {"todoId":"…","commentId":"…"}               always last
+event: error   data: {"message":"…"}                              the run failed
+```
+
+The route is a pure **observer**: `POST /todos` drives the run, the stream only
+watches it. Kill the client mid-`delta` and the comment still lands in Postgres.
+Attach after the run finished and you get an immediate `done` — Mastra keeps a
+finished run's stream only while the run object is alive — which is the signal to
+fall back to `GET /todos`. That fallback is the reason `apps/web` never stops
+polling.
 
 The custom routes live at the **root path**, not under `/api`: Mastra reserves
 its `apiPrefix` (default `/api`) for its own REST API — `GET /api/workflows`,
