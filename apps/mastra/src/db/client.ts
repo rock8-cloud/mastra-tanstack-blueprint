@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import { requireEnv } from "../env.js";
+import { databaseUrl } from "./database-url.js";
 import * as schema from "./schema.js";
 
 /**
@@ -15,7 +15,7 @@ import * as schema from "./schema.js";
 let db: ReturnType<typeof createDb> | undefined;
 
 function createDb() {
-  const sql = postgres(requireEnv("DATABASE_URL"), { max: 10 });
+  const sql = postgres(databaseUrl(), { max: 10 });
   return drizzle(sql, { schema });
 }
 

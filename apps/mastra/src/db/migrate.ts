@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 
-import { requireEnv } from "../env.js";
+import { databaseUrl } from "./database-url.js";
 
 /**
  * Resolved relative to this module, never the working directory — `mastra dev`
@@ -32,7 +32,7 @@ function migrationsFolder() {
 export async function runMigrations() {
   // Its own single connection, closed immediately: migration is a boot step,
   // not part of the app's pool in client.ts.
-  const sql = postgres(requireEnv("DATABASE_URL"), { max: 1 });
+  const sql = postgres(databaseUrl(), { max: 1 });
   try {
     await migrate(drizzle(sql), { migrationsFolder: migrationsFolder() });
   } finally {
