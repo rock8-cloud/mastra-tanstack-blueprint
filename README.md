@@ -418,13 +418,20 @@ you prefer:
    up to date by every one after it. Open the web service's URL to add a todo,
    and the Mastra service's URL to see the run in Studio.
 
-Managed Postgres connection URLs typically carry `sslmode=require` with a
-self-signed certificate, which the node-postgres driver inside `@mastra/pg`
-rejects. Set `DATABASE_SSL_NO_VERIFY=true` on the mastra service to have
-Mastra's storage encrypt without certificate verification — libpq semantics,
-matching what the postgres.js driver already does (see the note in
-`apps/mastra/src/mastra/index.ts`). Leave it unset for databases with real
-certificates.
+Managed Postgres connection URLs come in two flavors, and the app accepts both:
+
+- **With `uselibpqcompat=true`** (Rock8Cloud's libpq-compatible URL): the
+  node-postgres driver inside `@mastra/pg` consumes the parameter and gets
+  correct libpq SSL semantics natively. postgres.js would instead forward the
+  unknown parameter to the server (a fatal error), so the db layer strips it
+  first — `apps/mastra/src/db/database-url.ts`. Nothing else to configure.
+- **Plain URL with `sslmode=require`** and a self-signed certificate:
+  postgres.js works as-is; node-postgres escalates `require` to full
+  verification and rejects the certificate — set `DATABASE_SSL_NO_VERIFY=true`
+  on the mastra service so Mastra's storage encrypts without verifying (see
+  the note in `apps/mastra/src/mastra/index.ts`).
+
+Leave `DATABASE_SSL_NO_VERIFY` unset for databases with real certificates.
 
 `PORT` is injected by the platform — do not set it manually. Both apps bind
 whatever they are given: Mastra through `server.port` in

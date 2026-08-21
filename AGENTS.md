@@ -18,6 +18,10 @@ of things that will break if you ignore them.
   the one Drizzle client and is imported by `queries.ts` and nothing else.
   Workflow steps and API routes call named query functions. Need new data? Add a
   function to `queries.ts` — do not import `drizzle-orm` or `getDb()` elsewhere.
+- **postgres.js connections must use `databaseUrl()`** from
+  `apps/mastra/src/db/database-url.ts`, never raw `DATABASE_URL`: it strips the
+  node-postgres-only `uselibpqcompat` parameter that postgres.js would forward
+  to the server (fatal `42704`). `@mastra/pg` keeps the raw URL on purpose.
 - **`apps/web` never imports Drizzle, never talks to the database, and never
   calls the AI gateway.** Its only upstream is `MASTRA_API_URL`, read in
   `apps/web/src/lib/mastra.ts`, which is imported exclusively from server route
