@@ -15,6 +15,18 @@ import { todoWorkflow } from "./workflows/todo-workflow.js";
 // with replicas, move this into a release step instead.
 await runMigrations();
 
+const connectionString = requireEnv("DATABASE_URL");
+
+// The two Postgres drivers in this app disagree about `sslmode=require`:
+// postgres.js (src/db) encrypts without verifying the certificate — libpq
+// semantics — while node-postgres (inside @mastra/pg) escalates it to
+// verify-full and rejects the self-signed certificates managed Postgres
+// offerings (Rock8Cloud's included) present. Align them: for require/prefer,
+// encrypt but don't verify. verify-ca / verify-full URLs keep full checks.
+const relaxedSsl = /sslmode=(require|prefer)\b/.test(connectionString)
+  ? { ssl: { rejectUnauthorized: false } }
+  : {};
+
 export const mastra = new Mastra({
   agents: { commenter: commenterAgent },
   workflows: { "todo-workflow": todoWorkflow },
@@ -24,7 +36,8 @@ export const mastra = new Mastra({
   // a workflow run and the rows it wrote can be read in a single psql session.
   storage: new PostgresStore({
     id: "mastra-blueprint",
-    connectionString: requireEnv("DATABASE_URL"),
+    connectionString,
+    ...relaxedSsl,
   }),
 
   logger: new PinoLogger({ name: "mastra-blueprint", level: "info" }),

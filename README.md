@@ -367,6 +367,12 @@ you prefer:
    up to date by every one after it. Open the web service's URL to add a todo,
    and the Mastra service's URL to see the run in Studio.
 
+Managed Postgres connection URLs typically carry `sslmode=require` with a
+self-signed certificate. The mastra service handles this (see the `relaxedSsl`
+note in `apps/mastra/src/mastra/index.ts`): `require`/`prefer` encrypt without
+certificate verification — libpq semantics, matching the postgres.js driver —
+while `verify-ca`/`verify-full` URLs keep full verification.
+
 `PORT` is injected by the platform — do not set it manually. Both apps bind
 whatever they are given: Mastra through `server.port` in
 `apps/mastra/src/mastra/index.ts`, the web app through Nitro's own `PORT`
