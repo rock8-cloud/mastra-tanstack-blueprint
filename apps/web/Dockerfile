@@ -18,7 +18,7 @@ COPY packages/typescript-config packages/typescript-config
 # Vite + Nitro emit a self-contained Node server in apps/web/.output.
 RUN cd apps/web && bun run build
 
-FROM node:22-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # Overridden by the platform; the Nitro server reads PORT.
