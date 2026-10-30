@@ -4,7 +4,7 @@
 # Rock8Cloud builds this image itself: point the service at this path and it
 # reads the port from EXPOSE below. Nothing here needs a secret — every
 # environment variable is read on first use at runtime, not at build time.
-FROM oven/bun:1.3.14 AS build
+FROM oven/bun:1.4.4 AS build
 WORKDIR /app
 
 # Manifests first, so `bun install` is cached until a dependency actually
