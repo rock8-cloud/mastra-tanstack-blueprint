@@ -23,7 +23,7 @@ COPY packages/typescript-config packages/typescript-config
 # apps/mastra/.mastra/output, together with that bundle's own node_modules.
 RUN cd apps/mastra && bun run build
 
-FROM node:22-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # Overridden by the platform. `src/mastra/index.ts` reads PORT and binds it
