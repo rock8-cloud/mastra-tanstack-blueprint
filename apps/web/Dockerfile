@@ -3,7 +3,7 @@
 #
 # MASTRA_API_URL is deliberately *not* a build argument: it is read per request
 # on the server, so one image works against any Mastra deployment.
-FROM oven/bun:1.3.14 AS build
+FROM oven/bun:1.4.4 AS build
 WORKDIR /app
 
 COPY package.json bun.lock turbo.json ./
